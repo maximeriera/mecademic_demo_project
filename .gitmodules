@@ -1,0 +1,6 @@
+[submodule "mecademic_demo_app"]
+	path = mecademic_demo_app
+	url = https://github.com/maximeriera/mecademic_demo_app.git
+[submodule "mecademic_demo_template"]
+	path = mecademic_demo_template
+	url = https://github.com/maximeriera/mecademic_demo_template.git
