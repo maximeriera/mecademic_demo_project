@@ -3,7 +3,9 @@ setlocal
 
 set "VENV_DIR=mecademic_demo_app\.venv"
 set "APP_DIR=mecademic_demo_app"
-set "TEMPLATE_DIR=mecademic_demo_template"
+set "DEMO_DIR=mecademic_demo_lab_automation"
+
+cd /d "%~dp0"
 
 REM Check if the virtual environment exists, create if not
 if not exist "%VENV_DIR%\Scripts\activate.bat" (
@@ -24,6 +26,6 @@ set "PYTHONPATH=%~dp0%APP_DIR%"
 
 REM Start the application with the demo template as the workspace
 echo Starting the application...
-python "%APP_DIR%\app.py" --workspace "%TEMPLATE_DIR%"
+python "%APP_DIR%\app.py" --workspace "%DEMO_DIR%"
 
 endlocal
