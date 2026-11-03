@@ -1,38 +1,133 @@
 services:
-  mecademic-app:
-    build:
+  app:
+    build: 
       context: ./mecademic_demo_app
-      dockerfile: Dockerfile
-    image: mecademic-demo-app:linux
-    container_name: mecademic-demo-app
+    image: mecademic-demo:latest
+    container_name: mecademic-demo
+
+    # Comes back after a crash and after a host reboot, but stays down if you
+    # ran `docker compose stop` yourself.
     restart: unless-stopped
-    network_mode: host
-    devices:
-      - /dev/ttyUSB0:/dev/ttyUSB0
-      - /dev/ttyACM0:/dev/ttyACM0
-      # Stable-by-id examples (recommended for production)
-      # - /dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_85439323830351A052A0-if00:/dev/ttyUSB_arduino
+
+    # Run an init process as PID 1 so signals reach Python with the kernel's
+    # default semantics and no zombies accumulate.
+    init: true
+
+    # The controller's shutdown joins the running task (up to 5s) and the
+    # monitor thread (up to 10s) before disconnecting devices. Give it room to
+    # park the cell properly instead of being killed mid-sequence.
+    stop_grace_period: 30s
+
+    # Host port defaults to 8080, not 5000: on macOS the AirPlay Receiver
+    # (ControlCenter) listens on 5000, so a 5000:5000 mapping fails to bind
+    # there. The container still serves on 5000 internally.
+    #   MECADEMIC_PORT=5000 docker compose up -d
+    ports:
+      - "${MECADEMIC_PORT:-5000}:5000"
+
     environment:
-      MECADEMIC_DEMO_ROOT: /app
-      PYTHONUNBUFFERED: "1"
+      # Level written to the log files (app.log, ApplicationController.log,
+      # per-device logs and combined.log).
+      MECADEMIC_LOG_LEVEL: "${MECADEMIC_LOG_LEVEL:-DEBUG}"
+      # Level echoed to stdout, i.e. what `docker compose logs -f` shows.
+      # Set to DEBUG when chasing a problem live.
+      MECADEMIC_CONSOLE_LOG_LEVEL: "${MECADEMIC_CONSOLE_LOG_LEVEL:-INFO}"
+
     volumes:
-      - ./mecademic_demo_app/app_logic:/app/app_logic
-      - ./mecademic_demo_app/backups:/app/backups
-      - ./logs:/app/logs
+      # Cell configuration and task logic, editable without rebuilding the
+      # image. Must stay writable: the context saves `persist: true` values to
+      # app_logic/context.state.json.
+      - ./mecademic_demo_fiber_align:/webapp/app_logic
+
+      # Rotating app/device logs, so the Logs tab keeps history across restarts.
+      - ./mecademic_demo_fiber_align/logs:/webapp/logs
+
+      # Robot backup archives produced by the Backup/Restore tab. These are
+      # real data — without this mount they are lost whenever the container is
+      # recreated.
+      - ./mecademic_demo_fiber_align/backups:/webapp/backups
+
+    # python:*-slim ships no curl/wget, so probe with the interpreter.
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://127.0.0.1:5000/api/status"]
-      interval: 15s
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          with urllib.request.urlopen("http://127.0.0.1:5000/api/status", timeout=3) as r:
+              sys.exit(0 if r.status == 200 else 1)
+      interval: 30s
       timeout: 5s
+      start_period: 15s
       retries: 3
-      start_period: 30s
+
+    # The app writes its own rotating files under /webapp/logs; cap the
+    # container's stdout capture so it cannot grow without bound.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    devices:
+      # - "/dev/ttyUSB0:/dev/ttyUSB0"
+      - "/dev/bus/usb:/dev/bus/usb"
+
+    # ---------------------------------------------------------------------
+    # Talking to real hardware
+    # ---------------------------------------------------------------------
+    # The default bridge network above reaches routable device IPs (Mecademic,
+    # Asyril, ioLogik, Brainboxes, LMI, SmarAct MCS2) just fine, and works on
+    # Docker Desktop for macOS and Windows.
+    #
+    # It does NOT pass UDP broadcast/multicast, which GigE Vision discovery
+    # (GVCP) and the planar motor's auto_search_and_connect_to_pmc() rely on.
+    # If you need those, run on a Linux host and swap the `ports:` block above
+    # for host networking:
+    #
+    #   network_mode: host
+    #
+    # (`ports:` and `network_mode: host` are mutually exclusive, and host mode
+    # is Linux-only — on Docker Desktop it does not behave the same way.)
+    #
+    # For serial devices (Arduino via Firmata, Zaber), pass the TTY through:
+    #
+    #   devices:
+    #     - "/dev/ttyUSB0:/dev/ttyUSB0"
+    #
+    # and set the matching `port:` in app_logic/config.yaml.
+    #
+    # For USB instruments (Thorlabs power meters), pass the USB bus through.
+    # Linux hosts only — Docker Desktop on macOS and Windows cannot forward USB:
+    #
+    #   devices:
+    #     - "/dev/bus/usb:/dev/bus/usb"
+    #
+    # NOTE: pmclib (planar motor) cannot import in this image — pythonnet needs
+    # a .NET/mono runtime that python:*-slim does not carry. Every other driver
+    # works. Add mono to the Dockerfile if you need planar motor support in a
+    # container.
 
   nginx:
-    image: nginx:1.27-alpine
-    container_name: mecademic-demo-nginx
-    restart: unless-stopped
-    network_mode: host
-    depends_on:
-      mecademic-app:
-        condition: service_healthy
+    image: nginx:alpine
+    ports: ["80:80"]
     volumes:
-      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on: [app]
+    restart: unless-stopped
+
+  pihole:
+    image: pihole/pihole:latest
+    network_mode: host
+    cap_add:
+      - NET_ADMIN # Required if you are using Pi-hole as your DHCP server, else not needed
+    environment:
+      TZ: America/Toronto
+      FTLCONF_webserver_api_password: "Mecademic!"
+      FTLCONF_dns_listeningMode: all
+      FTLCONF_webserver_port: "8080"
+      DNSMASQ_USER: root
+    volumes:
+      - ./etc-pihole:/etc/pihole
+    restart: unless-stopped
