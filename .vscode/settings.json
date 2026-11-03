@@ -1,0 +1,9 @@
+{
+  "python.analysis.extraPaths": [
+    "./mecademic_demo_app"
+  ],
+  "python.autoComplete.extraPaths": [
+    "./mecademic_demo_app"
+  ],
+  "python.envFile": "${workspaceFolder}/.env"
+}

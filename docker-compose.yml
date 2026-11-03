@@ -1,0 +1,38 @@
+services:
+  mecademic-app:
+    build:
+      context: ./mecademic_demo_app
+      dockerfile: Dockerfile
+    image: mecademic-demo-app:linux
+    container_name: mecademic-demo-app
+    restart: unless-stopped
+    network_mode: host
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/ttyACM0:/dev/ttyACM0
+      # Stable-by-id examples (recommended for production)
+      # - /dev/serial/by-id/usb-Arduino__www.arduino.cc__0043_85439323830351A052A0-if00:/dev/ttyUSB_arduino
+    environment:
+      MECADEMIC_DEMO_ROOT: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./mecademic_demo_app/app_logic:/app/app_logic
+      - ./mecademic_demo_app/backups:/app/backups
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://127.0.0.1:5000/api/status"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  nginx:
+    image: nginx:1.27-alpine
+    container_name: mecademic-demo-nginx
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      mecademic-app:
+        condition: service_healthy
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
